@@ -203,7 +203,7 @@ module TemplateStreaming
   module Response
     def self.included(base)
       base.alias_method_chain :prepare!, :template_streaming
-      base.alias_method_chain :set_content_length!, :template_streaming
+      # base.alias_method_chain :set_content_length!, :template_streaming
     end
 
     def prepare_with_template_streaming!
@@ -212,32 +212,30 @@ module TemplateStreaming
       @prepared = true
     end
 
-    def set_content_length_with_template_streaming!
-      if body.is_a?(StreamingBody)
-        # pass
-      else
-        set_content_length_without_template_streaming!
-      end
-    end
+    # def set_content_length_with_template_streaming!
+    #   if body.is_a?(StreamingBody)
+    #     # pass
+    #   else
+    #     set_content_length_without_template_streaming!
+    #   end
+    # end
   end
 
   module View
     def self.included(base)
-      base.alias_method_chain :_render_with_layout, :template_streaming
+      base.alias_method_chain :_render_template, :template_streaming
       base.alias_method_chain :flash, :template_streaming
     end
 
-    def _render_with_layout_with_template_streaming(options, local_assigns, &block)
-      if block_given?
-        _render_with_layout_without_template_streaming(options, local_assigns, &block)
-      elsif options[:layout].is_a?(ActionView::Template) && controller.class.render_progressively?
+    def _render_template_with_template_streaming(template, layout = nil, options = {})
+      locals = options[:locals] || {}
+      layout = find_layout(layout) if layout
+      if layout.is_a?(ActionView::Template) && controller.class.render_progressively?
         # Toplevel render call, from the controller.
-        layout = options.delete(:layout)
-        with_render_proc_for_layout(options) do
+        with_render_proc_for_layout(layout) do
           render(options.merge(:file => layout.path_without_format_and_extension))
         end
       elsif options[:progressive]
-        layout = options.delete(:layout)
         with_render_proc_for_layout(options) do
           if (options[:inline] || options[:file] || options[:text])
             render(:file => layout, :locals => local_assigns)
@@ -253,7 +251,7 @@ module TemplateStreaming
         original_proc_for_layout = @_proc_for_layout
         @_proc_for_layout = nil
         begin
-          _render_with_layout_without_template_streaming(options, local_assigns, &block)
+          _render_template_without_template_streaming(options, local_assigns, &block)
         ensure
           @_proc_for_layout = original_proc_for_layout
         end
@@ -314,8 +312,8 @@ module TemplateStreaming
 
   ActionView::Base.send :include, View
   ActionController::Base.send :include, Controller
-  ActionController::Response.send :include, Response
-  ActionController::Dispatcher.middleware.insert 0, Rack::Chunked
+  ActionDispatch::Response.send :include, Response
+  Rails.application.config.middleware.insert(0,Rack::Chunked)
 end
 
 # Please let there be a better way to do this...

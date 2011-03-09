@@ -117,8 +117,8 @@ module TemplateStreaming
     # immediately.
     #
     def flush
-      if @streaming_body && !@template.output_buffer.nil?
-        push @template.output_buffer.slice!(0..-1)
+      if @streaming_body && !view_context.output_buffer.nil?
+        push view_context.output_buffer.slice!(0..-1)
       end
     end
 
@@ -128,7 +128,6 @@ module TemplateStreaming
     def push(data)
       if @streaming_body
         @streaming_body.push(data)
-        flush_thin
       end
     end
 
@@ -190,13 +189,6 @@ module TemplateStreaming
       end
     end
 
-    #
-    # Force EventMachine to flush its buffer when using Thin.
-    #
-    def flush_thin
-      connection = request.env['template_streaming.thin_connection'] and
-        EventMachineFlush.flush(connection)
-    end
   end
 
   # Only prepare once.
@@ -229,16 +221,16 @@ module TemplateStreaming
 
     def _render_template_with_template_streaming(template, layout = nil, options = {})
       locals = options[:locals] || {}
-      layout = find_layout(layout) if layout
+      # layout = find_layout(layout) if layout
       if layout.is_a?(ActionView::Template) && controller.class.render_progressively?
         # Toplevel render call, from the controller.
         with_render_proc_for_layout(layout) do
-          render(options.merge(:file => layout.path_without_format_and_extension))
+          render(options.merge(:file => layout))
         end
       elsif options[:progressive]
         with_render_proc_for_layout(options) do
           if (options[:inline] || options[:file] || options[:text])
-            render(:file => layout, :locals => local_assigns)
+            render(:file => layout, :locals => locals)
           else
             render(options.merge(:partial => layout))
           end
@@ -251,7 +243,7 @@ module TemplateStreaming
         original_proc_for_layout = @_proc_for_layout
         @_proc_for_layout = nil
         begin
-          _render_template_without_template_streaming(options, local_assigns, &block)
+          _render_template_without_template_streaming(template, layout, options)
         ensure
           @_proc_for_layout = original_proc_for_layout
         end
@@ -313,36 +305,6 @@ module TemplateStreaming
   ActionView::Base.send :include, View
   ActionController::Base.send :include, Controller
   ActionDispatch::Response.send :include, Response
-  Rails.application.config.middleware.insert(0,Rack::Chunked)
+  # Rails.application.config.middleware.insert(0,Rack::Chunked)
 end
 
-# Please let there be a better way to do this...
-#
-# We need to force Thin (EventMachine, really) to flush its output
-# buffer before ending the current EventMachine tick. We can't use
-# EventMachine.defer or .next_tick, as that would require returning
-# from the call to the response body's #each. I'm not convinced Thin
-# could even be rearchitected to support this without resorting to
-# Threads, Continuations, or Fibers.
-#
-# Here, we hack Thin to add a handle to the connection object to the
-# request environment, which we pass to EventMachineFlush, a horrid
-# C++ hack. In ruby 1.8.7 we could use env[async.callback].receiver,
-# but we want to support 1.8.6 for now too.
-if defined?(Thin)
-  begin
-    require 'event_machine_flush'
-  rescue LoadError
-    raise "Template Streaming on Thin requires the event_machine_flush gem."
-  end
-
-  Rails.configuration.after_initialize do
-    Thin::Connection.class_eval do
-      def pre_process_with_template_streaming(*args, &block)
-        @request.env['template_streaming.thin_connection'] = self
-        pre_process_without_template_streaming(*args, &block)
-      end
-      alias_method_chain :pre_process, :template_streaming
-    end
-  end
-end

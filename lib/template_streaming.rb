@@ -155,7 +155,7 @@ module TemplateStreaming
         self.class.render_progressively? or
           return yield(false)
 
-        if options
+        unless options.empty?
           yield((UNSTREAMABLE_KEYS & options.keys).empty?)
         else
           yield args.first != :update
@@ -194,23 +194,20 @@ module TemplateStreaming
   # Only prepare once.
   module Response
     def self.included(base)
-      base.alias_method_chain :prepare!, :template_streaming
-      # base.alias_method_chain :set_content_length!, :template_streaming
+      base.send :remove_method, :to_a
+      base.send :alias_method, :prepare!, :to_a
     end
 
-    def prepare_with_template_streaming!
-      return if defined?(@prepared)
-      prepare_without_template_streaming!
+    def to_a
+      return super if defined?(@prepared)
       @prepared = true
+      assign_default_content_type_and_charset!
+      handle_conditional_get!
+      self["Set-Cookie"] = self["Set-Cookie"].join("\n") if self["Set-Cookie"].respond_to?(:join)
+      self["ETag"]       = @_etag if @_etag
+      super
     end
 
-    # def set_content_length_with_template_streaming!
-    #   if body.is_a?(StreamingBody)
-    #     # pass
-    #   else
-    #     set_content_length_without_template_streaming!
-    #   end
-    # end
   end
 
   module View
@@ -220,34 +217,46 @@ module TemplateStreaming
     end
 
     def _render_template_with_template_streaming(template, layout = nil, options = {})
-      locals = options[:locals] || {}
-      # layout = find_layout(layout) if layout
-      if layout.is_a?(ActionView::Template) && controller.class.render_progressively?
-        # Toplevel render call, from the controller.
-        with_render_proc_for_layout(layout) do
-          render(options.merge(:file => layout))
-        end
-      elsif options[:progressive]
+      if layout && options[:progressive]
+        locals = options[:locals] || {}
+        layout = find_layout(layout)
         with_render_proc_for_layout(options) do
-          if (options[:inline] || options[:file] || options[:text])
-            render(:file => layout, :locals => locals)
-          else
-            render(options.merge(:partial => layout))
-          end
+          content = _render_layout(layout, locals)
+          content
         end
       else
-        # We may have set @_proc_for_layout in an outer render, but
-        # render(:layout => , :partial =>) uses @content_for_layout, and
-        # @_proc_for_layout overrides @content_for_layout. Thus, we need to
-        # clear @_proc_for_layout for the duration of this render.
-        original_proc_for_layout = @_proc_for_layout
-        @_proc_for_layout = nil
-        begin
-          _render_template_without_template_streaming(template, layout, options)
-        ensure
-          @_proc_for_layout = original_proc_for_layout
-        end
+        _render_template_without_template_streaming(template, layout, options)
       end
+      # locals = options[:locals] || {}
+      # # layout = find_layout(layout) if layout
+      # Rails.logger.error("RENDERING #{template.inspect}, layout is #{layout.inspect}")
+      # if layout.is_a?(ActionView::Template) && controller.class.render_progressively?
+      #   Rails.logger.error("TOPLEVEL RENDER CALL, FROM THE CONTROLLER.")
+      #   # Toplevel render call, from the controller.
+      #   with_render_proc_for_layout(layout) do
+      #     render(options.merge(:file => layout))
+      #   end
+      # elsif options[:progressive]
+      #   with_render_proc_for_layout(options) do
+      #     if (options[:inline] || options[:file] || options[:text])
+      #       render(:file => layout, :locals => locals)
+      #     else
+      #       render(options.merge(:partial => layout))
+      #     end
+      #   end
+      # else
+      #   # We may have set @_proc_for_layout in an outer render, but
+      #   # render(:layout => , :partial =>) uses @content_for_layout, and
+      #   # @_proc_for_layout overrides @content_for_layout. Thus, we need to
+      #   # clear @_proc_for_layout for the duration of this render.
+      #   original_proc_for_layout = @_proc_for_layout
+      #   @_proc_for_layout = nil
+      #   begin
+      #     _render_template_without_template_streaming(template, layout, options)
+      #   ensure
+      #     @_proc_for_layout = original_proc_for_layout
+      #   end
+      # end
     end
 
     def with_render_proc_for_layout(options)
@@ -293,6 +302,8 @@ module TemplateStreaming
       end
     end
 
+    # alias_method :<<, :push
+    
     private  # -------------------------------------------------------
 
     def padding(length)
